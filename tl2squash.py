@@ -8,26 +8,18 @@ import string
 import sys
 from datetime import datetime
 
-# --- CONFIGURATION ---
-# Must match the target Squash TM project name exactly (import fails with "project does not exist" otherwise)
+# CONFIGURATION
 PROJECT_NAME = "OpenProject"
-# Root folder under the project. Leave empty "" to match TestLink: Project -> folders -> test cases.
 IMPORT_ROOT_FOLDER = ""
 SQUASH_CUF_CODE = "EXEC_TYPE"
-# Custom field code for TestLink ID (leave empty to use TC_REFERENCE instead)
 SQUASH_CUF_TESTLINK_ID = "testlink_id"
-# If True, fill TC_REFERENCE with TestLink externalid (e.g. 100-855). If False, leave empty.
 MIGRATE_TESTLINK_ID = True
-# Split output into multiple files to avoid 413 errors on large imports. 1 = single file, 4 = split into 4 parts, etc.
 SPLIT_INTO_PARTS = 4
-# ---------------------
 
 def generate_short_id():
-    """Generates a random 4-char string to ensure uniqueness"""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
 
 def sanitize_text(text):
-    """Plain text for names/labels: strip HTML and normalize."""
     if not text: return ""
     text = str(text)
     text = html.unescape(text)
@@ -36,18 +28,14 @@ def sanitize_text(text):
     text = "".join(ch for ch in text if (ord(ch) >= 32 or ch in "\n\t\r"))
     return " ".join(text.split())
 
-
 def rich_text_to_html(raw):
-    """Convert TestLink content to Squash-safe HTML: strip tags, wrap in <p>, escape."""
-    if not raw:
-        return ""
+    if not raw: return ""
     text = str(raw)
     text = html.unescape(text)
     cleanr = re.compile('<.*?>')
     text = re.sub(cleanr, '', text)
     text = "".join(ch for ch in text if (ord(ch) >= 32 or ch in "\n\t\r"))
     text = " ".join(text.split())
-    # Minimal HTML: wrap in <p>, encode specials
     text = html.escape(text)
     return f"<p>{text}</p>" if text else ""
 
@@ -98,15 +86,12 @@ def get_node_text(element, tag_name):
 
 
 def _xls_cell(val, max_len=32767):
-    """Excel 97-2003 cell limit is 32767 chars; xlwt enforces it."""
     if pd.isna(val):
         return ''
     s = str(val)
     return s[:max_len] if len(s) > max_len else s
 
-
 def write_xls(path, df_tc, df_steps, df_param, df_dataset, df_link):
-    """Write .xls (Excel 97-2003) like Squash TM template, using xlwt (pandas 2+ dropped xlwt engine)."""
     import xlwt
     wb = xlwt.Workbook(encoding='utf-8')
     style_header = xlwt.easyxf('font: bold on')
@@ -135,7 +120,6 @@ def split_and_write_files(df_tc, df_steps, xml_file):
 
     start_idx = 0
     for i in range(SPLIT_INTO_PARTS):
-        # Distribute remainder across first few groups
         current_size = group_size + (1 if i < remainder else 0)
         end_idx = start_idx + current_size
         tc_groups.append(tc_list[start_idx:end_idx])
@@ -145,16 +129,11 @@ def split_and_write_files(df_tc, df_steps, xml_file):
     output_dir = os.path.dirname(os.path.abspath(xml_file)) or '.'
 
     for part_num, tc_group in enumerate(tc_groups, 1):
-        # Create DataFrame for this group
         df_tc_part = pd.DataFrame(tc_group)
-
-        # Filter steps that belong to test cases in this group
         tc_paths = set(df_tc_part['TC_PATH'].tolist())
         df_steps_part = df_steps[df_steps['TC_OWNER_PATH'].isin(tc_paths)]
 
         print(f"Part {part_num}: {len(df_tc_part)} test cases, {len(df_steps_part)} steps")
-
-        # Create placeholder sheets
         param_cols = ['ACTION', 'TC_OWNER_PATH', 'TC_PARAM_NAME', 'TC_PARAM_DESCRIPTION']
         dataset_cols = ['ACTION', 'TC_OWNER_PATH', 'TC_DATASET_NAME', 'TC_PARAM_OWNER_PATH', 'TC_DATASET_PARAM_NAME', 'TC_DATASET_PARAM_VALUE']
         link_cols = ['REQ_PATH', 'REQ_VERSION_NUM', 'TC_PATH']
@@ -191,13 +170,11 @@ def split_and_write_files(df_tc, df_steps, xml_file):
             print(f"SUCCESS! Part {part_num} created (XLSX). (.xls failed: {xls_err})")
 
 def main():
-    print(f"--- Configuration ---")
     print(f"Target Project: '{PROJECT_NAME}'")
-    print(f"Import root folder: '{IMPORT_ROOT_FOLDER or '(none - same as TestLink: project -> folders -> test cases)'}'")
+    print(f"Import root folder: '{IMPORT_ROOT_FOLDER or '(none - TestLink structure)'}'")
     if not IMPORT_ROOT_FOLDER:
-        print("NOTE: If import returns 500 DuplicateNameException, delete all test case library content under that project in Squash TM, then import again.")
-    
-    # Optional: python tl2squash.py [path/to/export.xml]
+        print("NOTE: For 500 errors, delete existing content or set IMPORT_ROOT_FOLDER")
+
     if len(sys.argv) >= 2:
         xml_file = sys.argv[1]
         if not os.path.isfile(xml_file):
@@ -206,25 +183,24 @@ def main():
     else:
         files = [f for f in os.listdir('.') if f.endswith('.xml')]
         if not files:
-            print("ERROR: No .xml file found in current directory. Usage: python tl2squash.py [path/to/export.xml]")
+            print("ERROR: No .xml file found. Usage: python tl2squash.py [path/to/export.xml]")
             return
         xml_file = files[0]
-    print(f"--- Processing: {xml_file} ---")
+    print(f"Processing: {xml_file}")
 
     try:
         tree = ET.parse(xml_file)
         root = tree.getroot()
-        
-        # Verify TestLink structure: project -> folders (testsuites) -> test cases
+
         top_suites = [c for c in root if c.tag.endswith('testsuite')]
         first_level = [s.get('name', '') for s in top_suites if s.get('name')]
-        print(f"TestLink structure (first-level folders): {', '.join(first_level[:15])}{'...' if len(first_level) > 15 else ''}")
-        
+        print(f"TestLink folders: {', '.join(first_level[:10])}{'...' if len(first_level) > 10 else ''}")
+
         tc_rows = []
         step_rows = []
-        seen_folders = set()  # (path_prefix, folder_name) to avoid duplicate folder names under same parent
-        seen_test_cases = {}  # (folder_path, tc_name) -> count for deduplication
-        effective_root = IMPORT_ROOT_FOLDER  # "" = paths like /ProjectName/folders/... (TestLink structure)
+        seen_folders = set()
+        seen_test_cases = {}
+        effective_root = IMPORT_ROOT_FOLDER
 
         def get_children(elem, tag_suffix):
             return [child for child in elem if child.tag.endswith(tag_suffix)]
@@ -245,10 +221,8 @@ def main():
                 tc_name = sanitize_text(raw_tc_name)
                 if not tc_name: tc_name = "Unnamed Case"
 
-                # 1. Folder Path
                 squash_folder_path = format_path(current_raw_path)
-                
-                # 2. Deduplication - only add suffix if there's a duplicate in same folder
+
                 key = (squash_folder_path, tc_name)
                 if key in seen_test_cases:
                     seen_test_cases[key] += 1
@@ -257,7 +231,6 @@ def main():
                     seen_test_cases[key] = 1
                     final_tc_name = tc_name
 
-                # 3. Full Owner Path (Folder + Name)
                 full_tc_path = f"{squash_folder_path}/{final_tc_name}"
 
                 tc_description = rich_text_to_html(get_node_text(testcase, 'summary'))
@@ -266,7 +239,6 @@ def main():
                 execution_status = "Automated" if exec_val == "2" else "Manual"
                 testlink_id = get_node_text(testcase, 'externalid') if MIGRATE_TESTLINK_ID else ''
 
-                # --- TEST_CASES Sheet --- (TC_PATH = full path; TC_NAME ignored in CREATE)
                 tc_row = {
                     'ACTION': 'C',
                     'TC_PATH': full_tc_path,
@@ -277,7 +249,7 @@ def main():
                     'TC_MILESTONE': '',
                     'TC_WEIGHT_AUTO': '0',
                     'TC_WEIGHT': 'LOW',
-                    'TC_NATURE': 'NAT_UNDEFINED',  # Use default so it belongs to project's nature set
+                    'TC_NATURE': 'NAT_UNDEFINED',
                     'TC_TYPE': 'TYP_UNDEFINED',
                     'TC_STATUS': 'WORK_IN_PROGRESS',
                     'TC_DESCRIPTION': tc_description,
@@ -291,20 +263,16 @@ def main():
                     f'TC_CUF_{SQUASH_CUF_CODE}': execution_status
                 }
 
-                # Add TestLink ID custom field if configured
                 if SQUASH_CUF_TESTLINK_ID and testlink_id:
                     tc_row[f'TC_CUF_{SQUASH_CUF_TESTLINK_ID}'] = testlink_id
 
                 tc_rows.append(tc_row)
-                
-                # --- STEPS Sheet ---
                 steps_container_list = get_children(testcase, 'steps')
                 if steps_container_list:
                     steps = get_children(steps_container_list[0], 'step')
                     for i, step in enumerate(steps, 1):
                         action = rich_text_to_html(get_node_text(step, 'actions'))
                         expected = rich_text_to_html(get_node_text(step, 'expectedresults'))
-                        # Use 1 so order is taken from file order; avoids "TC_STEP_NUM over maximum position" warnings
                         step_num = 1
                         step_rows.append({
                             'ACTION': 'C',
@@ -326,7 +294,6 @@ def main():
             top_suites = get_children(root, 'testsuite')
             for s in top_suites: parse_suite(s, "")
         
-        # --- Output Generation (column order matches Squash TM template) ---
         TC_COLUMNS = [
             'ACTION', 'TC_PATH', 'TC_NUM', 'TC_UUID', 'TC_REFERENCE', 'TC_NAME',
             'TC_MILESTONE', 'TC_WEIGHT_AUTO', 'TC_WEIGHT', 'TC_NATURE', 'TC_TYPE',
@@ -335,7 +302,6 @@ def main():
             f'TC_CUF_{SQUASH_CUF_CODE}'
         ]
 
-        # Add TestLink ID custom field column if configured
         if SQUASH_CUF_TESTLINK_ID:
             TC_COLUMNS.append(f'TC_CUF_{SQUASH_CUF_TESTLINK_ID}')
         STEP_COLUMNS = [
@@ -348,15 +314,11 @@ def main():
         if not df_tc.empty:
             df_tc = df_tc[df_tc['TC_PATH'].str.strip() != ""]
 
-        print(f"DIAGNOSTIC: Generated {len(df_tc)} Test Cases")
-        print(f"DIAGNOSTIC: Generated {len(df_steps)} Steps")
+        print(f"Generated {len(df_tc)} Test Cases, {len(df_steps)} Steps")
 
-        # Split into multiple parts if configured
         if SPLIT_INTO_PARTS > 1:
             split_and_write_files(df_tc, df_steps, xml_file)
             return
-
-        # Template-Compliant Sheets (one placeholder row so Squash does not report "sheet not present or empty")
         param_cols = ['ACTION', 'TC_OWNER_PATH', 'TC_PARAM_NAME', 'TC_PARAM_DESCRIPTION']
         dataset_cols = ['ACTION', 'TC_OWNER_PATH', 'TC_DATASET_NAME', 'TC_PARAM_OWNER_PATH', 'TC_DATASET_PARAM_NAME', 'TC_DATASET_PARAM_VALUE']
         link_cols = ['REQ_PATH', 'REQ_VERSION_NUM', 'TC_PATH']
